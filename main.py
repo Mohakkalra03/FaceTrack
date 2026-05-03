@@ -8,7 +8,8 @@ from PyQt6.QtWidgets import QApplication
 
 from database.db import init_database
 from gui.login_window import LoginWindow
-from utils.config import APP_NAME, APP_STYLESHEET
+from utils.config import APP_NAME
+from utils.theme import theme_manager
 
 
 def main() -> int:
@@ -17,7 +18,7 @@ def main() -> int:
 
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
-    app.setStyleSheet(APP_STYLESHEET)
+    theme_manager.apply_theme(theme_manager.current_theme)
     app.setQuitOnLastWindowClosed(False)
 
     window = LoginWindow()

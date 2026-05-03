@@ -83,6 +83,12 @@ class TimetableService:
             conn.execute("DELETE FROM Timetable WHERE id = ?", (entry_id,))
         return True, "Timetable entry deleted."
 
+    def get_entry_by_id(self, entry_id: int) -> TimetableEntry | None:
+        """Return a timetable entry by primary key."""
+        with db_manager.connection() as conn:
+            row = conn.execute("SELECT * FROM Timetable WHERE id = ?", (entry_id,)).fetchone()
+        return TimetableEntry(**dict(row)) if row else None
+
     def list_entries(self, faculty: str | None = None, section: str | None = None, day: str | None = None) -> list[TimetableEntry]:
         """Fetch timetable entries filtered by faculty, section, or day."""
         query = "SELECT * FROM Timetable WHERE 1=1"

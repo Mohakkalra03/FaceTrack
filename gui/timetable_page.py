@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from client.api_client import BackendApiClient, BackendApiError
 from services.faculty_service import FacultyService
 from services.timetable_service import TimetableService
 from utils.config import BATCH_OPTIONS
@@ -36,6 +37,7 @@ class TimetableWidget(QWidget):
         self.student_section = student_section
         self.service = TimetableService()
         self.faculty_service = FacultyService()
+        self.api_client = BackendApiClient()
         self.editing_entry_id: int | None = None
         self._build_ui()
         self.load_entries()
@@ -125,6 +127,14 @@ class TimetableWidget(QWidget):
 
     def _load_faculty_options(self) -> None:
         self.faculty_input.clear()
+        try:
+            faculty_rows = self.api_client.list_faculty(include_admin=False)
+            for faculty in faculty_rows:
+                self.faculty_input.addItem(f"{faculty['name']} (@{faculty['username']})", faculty["username"])
+            return
+        except BackendApiError:
+            pass
+
         faculty_rows = self.faculty_service.list_faculty(include_admin=False)
         for faculty in faculty_rows:
             self.faculty_input.addItem(f"{faculty.name} (@{faculty.username})", faculty.username)
@@ -137,25 +147,26 @@ class TimetableWidget(QWidget):
             QMessageBox.warning(self, "Missing Fields", "Subject, assigned faculty, and batch are required.")
             return
 
-        if self.editing_entry_id is None:
-            success, message = self.service.create_entry(
-                subject=subject,
-                faculty=faculty_username,
-                day=self.day_input.currentText(),
-                start_time=self.start_time.time().toString("HH:mm"),
-                end_time=self.end_time.time().toString("HH:mm"),
-                section=section,
-            )
-        else:
-            success, message = self.service.update_entry(
-                entry_id=self.editing_entry_id,
-                subject=subject,
-                faculty=faculty_username,
-                day=self.day_input.currentText(),
-                start_time=self.start_time.time().toString("HH:mm"),
-                end_time=self.end_time.time().toString("HH:mm"),
-                section=section,
-            )
+        payload = {
+            "subject": subject,
+            "faculty": faculty_username,
+            "day": self.day_input.currentText(),
+            "start_time": self.start_time.time().toString("HH:mm"),
+            "end_time": self.end_time.time().toString("HH:mm"),
+            "section": section,
+        }
+        try:
+            if self.editing_entry_id is None:
+                response = self.api_client.create_timetable_entry(payload)
+            else:
+                response = self.api_client.update_timetable_entry(self.editing_entry_id, {**payload, "id": self.editing_entry_id})
+            success = response["success"]
+            message = response["message"]
+        except BackendApiError:
+            if self.editing_entry_id is None:
+                success, message = self.service.create_entry(**payload)
+            else:
+                success, message = self.service.update_entry(entry_id=self.editing_entry_id, **payload)
 
         if not success:
             QMessageBox.warning(self, "Timetable Error", message)
@@ -195,10 +206,14 @@ class TimetableWidget(QWidget):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        success, message = self.service.delete_entry(entry_id)
-        if not success:
-            QMessageBox.warning(self, "Timetable Error", message)
-            return
+        try:
+            response = self.api_client.delete_timetable_entry(entry_id)
+            message = response["message"]
+        except BackendApiError:
+            success, message = self.service.delete_entry(entry_id)
+            if not success:
+                QMessageBox.warning(self, "Timetable Error", message)
+                return
 
         QMessageBox.information(self, "Timetable Deleted", message)
         self.reset_form()
@@ -217,25 +232,41 @@ class TimetableWidget(QWidget):
         self.save_button.setText("Add Timetable Entry")
 
     def load_entries(self) -> None:
-        entries = self.service.list_entries(
-            faculty=self.faculty_username if self.faculty_username else None,
-            section=self.student_section if self.student_section else None,
-        )
-        faculty_map = {faculty.username: faculty.name for faculty in self.faculty_service.list_faculty(include_admin=True)}
+        try:
+            entries = self.api_client.get_timetable(
+                faculty=self.faculty_username if self.faculty_username else None,
+                section=self.student_section if self.student_section else None,
+            )
+            faculty_rows = self.api_client.list_faculty(include_admin=True)
+            faculty_map = {faculty["username"]: faculty["name"] for faculty in faculty_rows}
+        except BackendApiError:
+            entries = self.service.list_entries(
+                faculty=self.faculty_username if self.faculty_username else None,
+                section=self.student_section if self.student_section else None,
+            )
+            faculty_map = {faculty.username: faculty.name for faculty in self.faculty_service.list_faculty(include_admin=True)}
+
         self.table.setRowCount(len(entries))
         for row_index, entry in enumerate(entries):
+            entry_id = entry["id"] if isinstance(entry, dict) else entry.id
+            subject = entry["subject"] if isinstance(entry, dict) else entry.subject
+            faculty_username = entry["faculty"] if isinstance(entry, dict) else entry.faculty
+            day = entry["day"] if isinstance(entry, dict) else entry.day
+            start_time = entry["start_time"] if isinstance(entry, dict) else entry.start_time
+            end_time = entry["end_time"] if isinstance(entry, dict) else entry.end_time
+            section = entry["section"] if isinstance(entry, dict) else entry.section
             values = [
-                entry.subject,
-                f"{faculty_map.get(entry.faculty, entry.faculty)} (@{entry.faculty})",
-                entry.day,
-                entry.start_time,
-                entry.end_time,
-                entry.section,
+                subject,
+                f"{faculty_map.get(faculty_username, faculty_username)} (@{faculty_username})",
+                day,
+                start_time,
+                end_time,
+                section,
             ]
             for col_index, value in enumerate(values):
                 item = QTableWidgetItem(str(value))
                 if col_index == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, entry.id)
+                    item.setData(Qt.ItemDataRole.UserRole, entry_id)
                 if col_index == 1:
-                    item.setData(Qt.ItemDataRole.UserRole, entry.faculty)
+                    item.setData(Qt.ItemDataRole.UserRole, faculty_username)
                 self.table.setItem(row_index, col_index, item)

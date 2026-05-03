@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import cv2
+import numpy as np
 from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -19,6 +21,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from client.api_client import BackendApiClient, BackendApiError
+from database.models import TimetableEntry
 from face_engine.face_capture import CameraStream
 from face_engine.face_recognizer import FaceRecognizer
 from services.attendance_service import AttendanceService
@@ -36,6 +40,7 @@ class AttendanceWidget(QWidget):
         self.timetable_service = TimetableService()
         self.student_service = StudentService()
         self.attendance_service = AttendanceService()
+        self.api_client = BackendApiClient()
         self.camera = CameraStream()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self._process_frame)
@@ -44,7 +49,8 @@ class AttendanceWidget(QWidget):
         self.last_marked: dict[str, datetime] = {}
         self.pending_match_roll_no: str | None = None
         self.pending_match_count = 0
-        self.required_confirmations = 2
+        self.required_confirmations = 1
+        self._face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
         self._build_ui()
         self.load_today_classes()
 
@@ -82,7 +88,8 @@ class AttendanceWidget(QWidget):
         controls_layout.addWidget(self.mode_label)
 
         self.preview = QLabel("Camera feed will appear here once a class is selected.")
-        self.preview.setMinimumSize(420, 320)
+        self.preview.setMinimumSize(420, 300)
+        self.preview.setMaximumHeight(540)
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setStyleSheet("border: 1px dashed #3a4c64; border-radius: 16px; color: #93a3ba;")
         controls_layout.addWidget(self.preview)
@@ -102,12 +109,19 @@ class AttendanceWidget(QWidget):
         layout.addWidget(records_card, 0, 1)
 
     def load_today_classes(self) -> None:
-        classes = self.timetable_service.get_today_classes(self.faculty_username)
+        try:
+            classes = self.api_client.get_today_classes(self.faculty_username)
+        except BackendApiError:
+            classes = self.timetable_service.get_today_classes(self.faculty_username)
         self.class_selector.clear()
         self.class_selector.addItem("Select today's class", None)
         for entry in classes:
-            label = f"{entry.subject} | {entry.section} | {entry.start_time}-{entry.end_time}"
-            self.class_selector.addItem(label, entry)
+            if isinstance(entry, dict):
+                normalized = TimetableEntry(**entry)
+            else:
+                normalized = entry
+            label = f"{normalized.subject} | {normalized.section} | {normalized.start_time}-{normalized.end_time}"
+            self.class_selector.addItem(label, normalized)
 
     def start_session(self) -> None:
         entry = self.class_selector.currentData()
@@ -116,10 +130,25 @@ class AttendanceWidget(QWidget):
             return
 
         student_records = [
-            student
-            for student in self.student_service.get_all_student_encodings()
-            if student["section"] == entry.section and student["encodings"]
+            student for student in self.student_service.get_all_student_encodings() if student["section"] == entry.section and student["encodings"]
         ]
+        try:
+            api_students = self.api_client.list_student_encodings(entry.section)
+            student_records = [
+                {
+                    "roll_no": student["roll_no"],
+                    "name": student["name"],
+                    "section": student["section"],
+                    "department": student["department"],
+                    "year": student["year"],
+                    "red_flags": student["red_flags"],
+                    "encodings": [np.asarray(encoding, dtype=np.float64) for encoding in student["encodings"]],
+                }
+                for student in api_students
+                if student["encodings"]
+            ]
+        except BackendApiError:
+            pass
         if not student_records:
             QMessageBox.warning(self, "No Students", "No registered students with face data are available for this batch.")
             return
@@ -133,7 +162,10 @@ class AttendanceWidget(QWidget):
         self.pending_match_count = 0
         self.last_marked.clear()
         self.records_table.setRowCount(0)
-        self.attendance_service.ensure_session_records(entry, student_records)
+        try:
+            self.api_client.seed_attendance_session(entry.id)
+        except BackendApiError:
+            self.attendance_service.ensure_session_records(entry, student_records)
         self.recognizer = FaceRecognizer(student_records)
         self.start_button.setEnabled(False)
         self.stop_button.setEnabled(True)
@@ -166,7 +198,12 @@ class AttendanceWidget(QWidget):
 
             cutoff = self.last_marked.get(roll_no)
             if self.pending_match_count >= self.required_confirmations and (not cutoff or datetime.now() - cutoff > timedelta(seconds=5)):
-                success, message = self.attendance_service.mark_attendance(match, self.current_session)
+                try:
+                    response = self.api_client.mark_attendance(self.current_session.id, match["roll_no"])
+                    success = response["success"]
+                    message = response["message"]
+                except BackendApiError:
+                    success, message = self.attendance_service.mark_attendance(match, self.current_session)
                 self._append_record(
                     match["roll_no"],
                     match["name"],
@@ -190,13 +227,57 @@ class AttendanceWidget(QWidget):
             self.pending_match_count = 0
             self.mode_label.setText(f"Unknown or ambiguous face. Distance={match.get('distance', '-')}")
 
-        pixmap = frame_to_pixmap(frame).scaled(
+        display_frame = self._build_display_frame(frame, match)
+        pixmap = frame_to_pixmap(display_frame).scaled(
             self.preview.width(),
             self.preview.height(),
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
         self.preview.setPixmap(pixmap)
+
+    def _build_display_frame(self, frame: np.ndarray, match: dict | None) -> np.ndarray:
+        """Highlight detected faces without forcing a fixed framing box."""
+        display = frame.copy()
+        height, width = display.shape[:2]
+        gray = cv2.cvtColor(display, cv2.COLOR_BGR2GRAY)
+        faces = self._face_cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(80, 80))
+
+        frame_color = (36, 168, 255)
+        text = "Scanning for a single clear face"
+        if match and match.get("status") == "MATCH":
+            frame_color = (46, 204, 113)
+            text = f"Matched: {match['name']}"
+        elif match and match.get("status") == "UNKNOWN":
+            frame_color = (80, 130, 220)
+            text = "Face detected, adjusting match"
+        elif match and match.get("status") == "NO_FACE":
+            text = "Keep one clear face visible"
+
+        for x, y, w, h in faces:
+            cv2.rectangle(display, (x, y), (x + w, y + h), frame_color, 2)
+
+        cv2.putText(
+            display,
+            text,
+            (24, 34),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.72,
+            frame_color,
+            2,
+            cv2.LINE_AA,
+        )
+        cv2.putText(
+            display,
+            "Avoid multiple faces in frame for best attendance accuracy",
+            (24, min(height - 18, height - 18)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (220, 228, 240),
+            1,
+            cv2.LINE_AA,
+        )
+        return display
 
     def _append_record(self, roll_no: str, name: str, time_value: str, status: str) -> None:
         row = self.records_table.rowCount()

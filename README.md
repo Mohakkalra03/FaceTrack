@@ -23,6 +23,14 @@ FACETRACK is a desktop ERP-style identity and attendance system for faculty-driv
 FACETRACK/
 |-- main.py
 |-- setup_database.py
+|-- backend_api/
+|   |-- app/
+|   |-- requirements.txt
+|   |-- README.md
+|-- web_app/
+|   |-- src/
+|   |-- package.json
+|   |-- README.md
 |-- gui/
 |   |-- login_window.py
 |   |-- faculty_dashboard.py
@@ -87,6 +95,24 @@ python setup_database.py
 python main.py
 ```
 
+7. Run the shared backend API from the project root if you want desktop + web integration:
+
+```bash
+python api_server.py
+```
+
+## One-Click Launchers
+
+- Double-click [start_facetrack_desktop.bat](C:/Users/DELL/OneDrive/Desktop/Sem4/DTI/start_facetrack_desktop.bat) to start backend + desktop app together.
+- Run [build_web_app.bat](C:/Users/DELL/OneDrive/Desktop/Sem4/DTI/build_web_app.bat) once to create the production web bundle.
+- Double-click [start_facetrack_mobile.bat](C:/Users/DELL/OneDrive/Desktop/Sem4/DTI/start_facetrack_mobile.bat) to expose the built web portal on your local Wi-Fi.
+
+## EXE Builds
+
+- Run [build_desktop_exe.bat](C:/Users/DELL/OneDrive/Desktop/Sem4/DTI/build_desktop_exe.bat) to create `dist\FACETRACK\FACETRACK.exe`
+- Run [build_portal_exe.bat](C:/Users/DELL/OneDrive/Desktop/Sem4/DTI/build_portal_exe.bat) to create `dist\FACETRACK-Portal\FACETRACK-Portal.exe`
+- Run [start_portal_exe.bat](C:/Users/DELL/OneDrive/Desktop/Sem4/DTI/start_portal_exe.bat) after building the portal exe to serve the student portal for phone access on your local Wi-Fi
+
 ## Default Admin Login
 
 - Username: `admin`
@@ -97,3 +123,8 @@ python main.py
 - `face_recognition` is used when available. If it is not installed successfully on the local machine, FACETRACK falls back to a simplified OpenCV-based embedding mode so the application still runs for demonstration and testing.
 - Attendance can only be started by faculty after selecting one of today's timetable classes.
 - Student accounts cannot create attendance, alter timetable data, or modify institutional records.
+- A shared backend scaffold now exists in [backend_api/README.md](C:/Users/DELL/OneDrive/Desktop/Sem4/DTI/backend_api/README.md) for future desktop + web architecture.
+- A first student web portal scaffold now exists in [web_app/README.md](C:/Users/DELL/OneDrive/Desktop/Sem4/DTI/web_app/README.md).
+- The desktop app now prefers backend API reads for login, dashboard summaries, reports, and read-only timetable/student views when the backend is running, and falls back to local services if the backend is unavailable.
+- A permanent public website link is not something the local machine can create by itself; that requires external hosting or a domain. The current project now supports a one-click local-network mobile link from your laptop.
+- The desktop executable and portal executable require PyInstaller, which is installed automatically by the provided build scripts.

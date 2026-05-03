@@ -17,6 +17,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from client.api_client import BackendApiClient, BackendApiError
 from services.faculty_service import FacultyService
 
 
@@ -28,6 +29,7 @@ class ManageFacultyWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.faculty_service = FacultyService()
+        self.api_client = BackendApiClient()
         self._build_ui()
         self.load_faculty()
 
@@ -84,24 +86,43 @@ class ManageFacultyWidget(QWidget):
         layout.addWidget(list_card)
 
     def load_faculty(self) -> None:
-        faculty_rows = self.faculty_service.list_faculty(include_admin=True)
+        try:
+            faculty_rows = self.api_client.list_faculty(include_admin=True)
+            mapped_rows = faculty_rows
+            use_dict = True
+        except BackendApiError:
+            faculty_rows = self.faculty_service.list_faculty(include_admin=True)
+            mapped_rows = faculty_rows
+            use_dict = False
         self.table.setRowCount(len(faculty_rows))
-        for row_index, faculty in enumerate(faculty_rows):
-            access = "Attendance + timetable view" if faculty.role == "faculty" else "Admin controls"
-            values = [faculty.username, faculty.name, faculty.role.title(), access]
+        for row_index, faculty in enumerate(mapped_rows):
+            role = faculty["role"] if use_dict else faculty.role
+            username = faculty["username"] if use_dict else faculty.username
+            name = faculty["name"] if use_dict else faculty.name
+            access = "Attendance + timetable view" if role == "faculty" else "Admin controls"
+            values = [username, name, role.title(), access]
             for col_index, value in enumerate(values):
                 self.table.setItem(row_index, col_index, QTableWidgetItem(str(value)))
 
     def create_faculty(self) -> None:
-        success, message = self.faculty_service.create_faculty(
-            self.name_input.text().strip(),
-            self.username_input.text().strip(),
-            self.password_input.text().strip(),
-            role="faculty",
-        )
-        if not success:
-            QMessageBox.warning(self, "Faculty Error", message)
-            return
+        try:
+            response = self.api_client.create_faculty(
+                self.name_input.text().strip(),
+                self.username_input.text().strip(),
+                self.password_input.text().strip(),
+                role="faculty",
+            )
+            message = response["message"]
+        except BackendApiError:
+            success, message = self.faculty_service.create_faculty(
+                self.name_input.text().strip(),
+                self.username_input.text().strip(),
+                self.password_input.text().strip(),
+                role="faculty",
+            )
+            if not success:
+                QMessageBox.warning(self, "Faculty Error", message)
+                return
 
         QMessageBox.information(self, "Faculty Added", message)
         self.name_input.clear()
@@ -121,10 +142,14 @@ class ManageFacultyWidget(QWidget):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        success, message = self.faculty_service.delete_faculty(username)
-        if not success:
-            QMessageBox.warning(self, "Faculty Error", message)
-            return
+        try:
+            response = self.api_client.delete_faculty(username)
+            message = response["message"]
+        except BackendApiError:
+            success, message = self.faculty_service.delete_faculty(username)
+            if not success:
+                QMessageBox.warning(self, "Faculty Error", message)
+                return
 
         QMessageBox.information(self, "Faculty Removed", message)
         self.load_faculty()

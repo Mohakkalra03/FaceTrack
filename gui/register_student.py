@@ -27,9 +27,10 @@ from PyQt6.QtWidgets import (
 
 from face_engine.face_capture import CameraStream, save_face_sample
 from face_engine.face_encode import FaceEncoder
+from client.api_client import BackendApiClient, BackendApiError
 from services.student_service import StudentService
 from utils.config import BATCH_OPTIONS, FACE_SAMPLE_MAX, FACE_SAMPLE_TARGET
-from utils.helpers import frame_to_pixmap
+from utils.helpers import frame_to_pixmap, serialize_encodings
 
 LOGGER = logging.getLogger(__name__)
 
@@ -42,6 +43,7 @@ class RegisterStudentWidget(QWidget):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.student_service = StudentService()
+        self.api_client = BackendApiClient()
         self.camera = CameraStream()
         self.encoder = FaceEncoder()
         self.timer = QTimer(self)
@@ -244,18 +246,26 @@ class RegisterStudentWidget(QWidget):
         try:
             self._stop_camera_preview()
             encodings = self.encoder.encodings_from_files([str(path) for path in self.captured_paths])
-            success, message = self.student_service.register_student(
-                {
-                    "roll_no": roll_no,
-                    "name": name,
-                    "department": department,
-                    "year": self.year_input.value(),
-                    "section": section,
-                    "password": password,
-                    "face_image_dir": str(self.captured_paths[0].parent),
-                },
-                encodings,
-            )
+            payload = {
+                "roll_no": roll_no,
+                "name": name,
+                "department": department,
+                "year": self.year_input.value(),
+                "section": section,
+                "password": password,
+                "face_image_dir": str(self.captured_paths[0].parent),
+            }
+            try:
+                response = self.api_client.create_student(
+                    {
+                        **payload,
+                        "serialized_encoding": serialize_encodings(encodings),
+                    }
+                )
+                success = response["success"]
+                message = response["message"]
+            except BackendApiError:
+                success, message = self.student_service.register_student(payload, encodings)
         except Exception as exc:
             LOGGER.exception("Student registration crashed for %s", roll_no)
             QMessageBox.critical(self, "Registration Error", f"Student registration failed unexpectedly.\n\n{exc}")
@@ -278,10 +288,19 @@ class RegisterStudentWidget(QWidget):
         self.student_registered.emit()
 
     def load_students(self) -> None:
-        students = self.student_service.list_students()
+        try:
+            students = self.api_client.list_students()
+            use_dict = True
+        except BackendApiError:
+            students = self.student_service.list_students()
+            use_dict = False
         self.students_table.setRowCount(len(students))
         for row_index, student in enumerate(students):
-            values = [student.roll_no, student.name, student.department, student.year, student.section, student.red_flags]
+            values = (
+                [student["roll_no"], student["name"], student["department"], student["year"], student["section"], student["red_flags"]]
+                if use_dict
+                else [student.roll_no, student.name, student.department, student.year, student.section, student.red_flags]
+            )
             for col_index, value in enumerate(values):
                 self.students_table.setItem(row_index, col_index, QTableWidgetItem(str(value)))
 
@@ -292,7 +311,11 @@ class RegisterStudentWidget(QWidget):
             return
 
         roll_no = self.students_table.item(row, 0).text()
-        student = self.student_service.get_student_by_roll(roll_no)
+        try:
+            student_data = self.api_client.get_student(roll_no)
+            student = type("StudentProxy", (), student_data)()
+        except BackendApiError:
+            student = self.student_service.get_student_by_roll(roll_no)
         if not student:
             QMessageBox.warning(self, "Student Missing", "The selected student could not be loaded.")
             return
@@ -313,20 +336,22 @@ class RegisterStudentWidget(QWidget):
             QMessageBox.information(self, "Edit Mode", "Load a student from the table before updating.")
             return
 
-        success, message = self.student_service.update_student_profile(
-            self.editing_roll_no,
-            {
-                "roll_no": self.roll_input.text().strip().upper(),
-                "name": self.name_input.text().strip(),
-                "department": self.department_input.text().strip(),
-                "year": self.year_input.value(),
-                "section": self.section_input.currentText().strip().upper(),
-                "password": self.password_input.text().strip(),
-            },
-        )
-        if not success:
-            QMessageBox.warning(self, "Update Failed", message)
-            return
+        payload = {
+            "roll_no": self.roll_input.text().strip().upper(),
+            "name": self.name_input.text().strip(),
+            "department": self.department_input.text().strip(),
+            "year": self.year_input.value(),
+            "section": self.section_input.currentText().strip().upper(),
+            "password": self.password_input.text().strip(),
+        }
+        try:
+            response = self.api_client.update_student(self.editing_roll_no, payload)
+            message = response["message"]
+        except BackendApiError:
+            success, message = self.student_service.update_student_profile(self.editing_roll_no, payload)
+            if not success:
+                QMessageBox.warning(self, "Update Failed", message)
+                return
 
         QMessageBox.information(self, "Student Updated", message)
         self._reset_form()
@@ -347,10 +372,14 @@ class RegisterStudentWidget(QWidget):
         if confirm != QMessageBox.StandardButton.Yes:
             return
 
-        success, message = self.student_service.delete_student(target_roll_no)
-        if not success:
-            QMessageBox.warning(self, "Delete Failed", message)
-            return
+        try:
+            response = self.api_client.delete_student(target_roll_no)
+            message = response["message"]
+        except BackendApiError:
+            success, message = self.student_service.delete_student(target_roll_no)
+            if not success:
+                QMessageBox.warning(self, "Delete Failed", message)
+                return
 
         QMessageBox.information(self, "Student Deleted", message)
         self._reset_form()

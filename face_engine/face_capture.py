@@ -20,7 +20,15 @@ class CameraStream:
     def open(self) -> bool:
         """Open the configured camera."""
         self.capture = cv2.VideoCapture(self.camera_index)
-        return bool(self.capture and self.capture.isOpened())
+        if not self.capture or not self.capture.isOpened():
+            return False
+
+        # Prefer a wider, stable preview and explicitly avoid digital zoom where supported.
+        self.capture.set(cv2.CAP_PROP_FRAME_WIDTH, 1280)
+        self.capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 720)
+        if hasattr(cv2, "CAP_PROP_ZOOM"):
+            self.capture.set(cv2.CAP_PROP_ZOOM, 0)
+        return True
 
     def read(self) -> np.ndarray | None:
         """Return the latest frame if available."""

@@ -19,6 +19,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from client.api_client import BackendApiClient, BackendApiError
 from database.db import db_manager
 from database.models import FacultyUser
 from gui.branding import ClassroomIllustration, FacetrackLogo, PortalHeader
@@ -27,6 +28,7 @@ from gui.student_dashboard import StudentDashboard
 from services.student_service import StudentService
 from utils.config import APP_NAME, FACULTY_DEFAULT_PASSWORD, FACULTY_DEFAULT_USERNAME
 from utils.helpers import hash_password
+from utils.theme import theme_manager
 
 
 class LoginWindow(QDialog):
@@ -35,6 +37,7 @@ class LoginWindow(QDialog):
     def __init__(self) -> None:
         super().__init__()
         self.student_service = StudentService()
+        self.api_client = BackendApiClient()
         self.setWindowTitle(f"{APP_NAME} Login")
         self.resize(1180, 700)
         self.active_window = None
@@ -97,7 +100,6 @@ class LoginWindow(QDialog):
             f"Username: {FACULTY_DEFAULT_USERNAME}\nPassword: {FACULTY_DEFAULT_PASSWORD}\nRole: Admin"
         )
         tips_body.setObjectName("SidebarMeta")
-        tips_body.setStyleSheet("color: #b5c0cf;")
         tips_layout.addWidget(tips_title)
         tips_layout.addWidget(tips_body)
         banner_layout.addWidget(tips)
@@ -108,6 +110,14 @@ class LoginWindow(QDialog):
         form_layout = QVBoxLayout(form_shell)
         form_layout.setContentsMargins(24, 24, 24, 24)
         form_layout.setSpacing(16)
+
+        top_row = QHBoxLayout()
+        top_row.addStretch()
+        self.theme_button = QPushButton(theme_manager.toggle_label())
+        self.theme_button.setProperty("variant", "theme")
+        self.theme_button.clicked.connect(self.toggle_theme)
+        top_row.addWidget(self.theme_button)
+        form_layout.addLayout(top_row)
 
         heading = QLabel("Sign In")
         heading.setObjectName("Title")
@@ -125,6 +135,10 @@ class LoginWindow(QDialog):
         tabs.addTab(self._student_login_tab(), "Student Login")
         form_layout.addWidget(tabs)
         root.addWidget(form_shell, 9)
+
+    def toggle_theme(self) -> None:
+        theme_manager.toggle_theme()
+        self.theme_button.setText(theme_manager.toggle_label())
 
     def closeEvent(self, event: QCloseEvent) -> None:
         app = QApplication.instance()
@@ -216,11 +230,26 @@ class LoginWindow(QDialog):
 
     def _restore_login(self) -> None:
         self.active_window = None
+        self.theme_button.setText(theme_manager.toggle_label())
         self.showMaximized()
         self.raise_()
         self.activateWindow()
 
     def _login_staff(self, username: str, password: str, expected_role: str) -> None:
+        try:
+            response = self.api_client.login(username, password, expected_role)
+            user = response["user"]
+            faculty_user = FacultyUser(
+                id=user["id"],
+                username=user["username"],
+                name=user["name"],
+                role=user["role"],
+            )
+            self._open_dashboard_safe(lambda: FacultyDashboard(faculty_user))
+            return
+        except BackendApiError:
+            pass
+
         with db_manager.connection() as conn:
             row = conn.execute(
                 "SELECT id, username, name, role FROM Faculty WHERE username = ? AND password = ?",
@@ -239,7 +268,7 @@ class LoginWindow(QDialog):
             name=row["name"],
             role=row["role"],
         )
-        self._open_dashboard(FacultyDashboard(faculty_user))
+        self._open_dashboard_safe(lambda: FacultyDashboard(faculty_user))
 
     def login_admin(self) -> None:
         self._login_staff(self.admin_username.text().strip(), self.admin_password.text().strip(), "admin")
@@ -248,12 +277,35 @@ class LoginWindow(QDialog):
         self._login_staff(self.faculty_username.text().strip(), self.faculty_password.text().strip(), "faculty")
 
     def login_student(self) -> None:
+        roll_no = self.student_roll_no.text().strip().upper()
+        password = self.student_password.text().strip()
+        try:
+            response = self.api_client.login(roll_no, password, "student")
+            user = response["user"]
+            student = self.student_service.get_student_by_roll(user["roll_no"])
+            if student:
+                self._open_dashboard_safe(lambda: StudentDashboard(student))
+                return
+        except BackendApiError:
+            pass
+
         student = self.student_service.authenticate_student(
-            self.student_roll_no.text().strip().upper(),
-            self.student_password.text().strip(),
+            roll_no,
+            password,
         )
         if not student:
             QMessageBox.warning(self, "Login Failed", "Invalid student credentials.")
             return
 
-        self._open_dashboard(StudentDashboard(student))
+        self._open_dashboard_safe(lambda: StudentDashboard(student))
+
+    def _open_dashboard_safe(self, window_factory) -> None:
+        try:
+            window = window_factory()
+            self._open_dashboard(window)
+        except Exception as exc:
+            QMessageBox.critical(
+                self,
+                "Dashboard Error",
+                f"The dashboard could not open after login.\n\n{exc}",
+            )

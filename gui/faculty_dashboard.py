@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from client.api_client import BackendApiClient, BackendApiError
 from gui.attendance_page import AttendanceWidget
 from gui.branding import FacetrackLogo, PortalHeader
 from gui.manage_faculty import ManageFacultyWidget
@@ -33,6 +34,7 @@ from services.attendance_service import AttendanceService
 from services.faculty_service import FacultyService
 from services.student_service import StudentService
 from services.timetable_service import TimetableService
+from utils.theme import theme_manager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -47,6 +49,7 @@ class DashboardHome(QWidget):
         self.faculty_service = FacultyService()
         self.timetable_service = TimetableService()
         self.attendance_service = AttendanceService()
+        self.api_client = BackendApiClient()
         self.cards: dict[str, QLabel] = {}
         self._build_ui()
         self.refresh()
@@ -130,24 +133,43 @@ class DashboardHome(QWidget):
         layout.addStretch()
 
     def refresh(self) -> None:
-        late_rows = self.attendance_service.get_late_student_report()
-        total_students = len(self.student_service.list_students())
-        total_records = self.attendance_service.count_total_records()
+        try:
+            late_rows = self.api_client.get_late_flag_report()
+            total_students = len(self.api_client.list_students())
+            total_records = len(self.api_client.get_attendance_records())
+            if self.faculty_user.role == "admin":
+                today_rows = self.api_client.get_today_classes()
+                faculty_count = len(self.api_client.list_faculty(include_admin=False))
+            else:
+                today_rows = self.api_client.get_today_classes(self.faculty_user.username)
+                faculty_count = None
+        except BackendApiError:
+            late_rows = self.attendance_service.get_late_student_report()
+            total_students = len(self.student_service.list_students())
+            total_records = self.attendance_service.count_total_records()
+            if self.faculty_user.role == "admin":
+                today_rows = self.timetable_service.get_today_classes(None)
+                faculty_count = self.faculty_service.count_faculty(include_admin=False)
+            else:
+                today_rows = self.timetable_service.get_today_classes(self.faculty_user.username)
+                faculty_count = None
 
         if self.faculty_user.role == "admin":
-            today_rows = self.timetable_service.get_today_classes(None)
-            self.cards["Faculty Accounts"].setText(str(self.faculty_service.count_faculty(include_admin=False)))
+            self.cards["Faculty Accounts"].setText(str(faculty_count))
             self.cards["Total Students"].setText(str(total_students))
             self.cards["Today's Classes"].setText(str(len(today_rows)))
             self.cards["Attendance Records"].setText(str(total_records))
 
             self.detail_table.setRowCount(len(today_rows))
             for row_index, entry in enumerate(today_rows):
-                values = [entry.subject, entry.faculty, entry.day, f"{entry.start_time}-{entry.end_time}", entry.section]
+                if isinstance(entry, dict):
+                    values = [entry["subject"], entry["faculty"], entry["day"], f"{entry['start_time']}-{entry['end_time']}", entry["section"]]
+                else:
+                    values = [entry.subject, entry.faculty, entry.day, f"{entry.start_time}-{entry.end_time}", entry.section]
                 for col_index, value in enumerate(values):
                     self.detail_table.setItem(row_index, col_index, QTableWidgetItem(str(value)))
         else:
-            self.cards["My Classes Today"].setText(str(len(self.timetable_service.get_today_classes(self.faculty_user.username))))
+            self.cards["My Classes Today"].setText(str(len(today_rows)))
             self.cards["Total Students"].setText(str(total_students))
             self.cards["Attendance Records"].setText(str(total_records))
             self.cards["Late Students"].setText(str(len(late_rows)))
@@ -165,6 +187,7 @@ class ReportsWidget(QWidget):
     def __init__(self) -> None:
         super().__init__()
         self.attendance_service = AttendanceService()
+        self.api_client = BackendApiClient()
         self._build_ui()
         self.refresh()
 
@@ -196,10 +219,20 @@ class ReportsWidget(QWidget):
         layout.addWidget(self.table)
 
     def refresh(self) -> None:
-        records = self.attendance_service.get_records()
+        try:
+            records = self.api_client.get_attendance_records()
+            values_list = [
+                [record["roll_no"], record["name"], record["subject"], record["date"], record["time"], record["status"], record["late_flags"]]
+                for record in records
+            ]
+        except BackendApiError:
+            records = self.attendance_service.get_records()
+            values_list = [
+                [record.roll_no, record.name, record.subject, record.date, record.time, record.status, record.late_flags]
+                for record in records
+            ]
         self.table.setRowCount(len(records))
-        for row_index, record in enumerate(records):
-            values = [record.roll_no, record.name, record.subject, record.date, record.time, record.status, record.late_flags]
+        for row_index, values in enumerate(values_list):
             for col_index, value in enumerate(values):
                 self.table.setItem(row_index, col_index, QTableWidgetItem(str(value)))
 
@@ -255,7 +288,7 @@ class FacultyDashboard(QMainWindow):
         portal_label = QLabel("Signed in as")
         portal_label.setObjectName("MetricLabel")
         info_name = QLabel(self.faculty_user.name)
-        info_name.setStyleSheet("font-size: 18px; font-weight: 700; color: #e7edf6;")
+        info_name.setObjectName("StrongText")
         info_meta = QLabel(f"@{self.faculty_user.username}\nRole: {self.faculty_user.role.title()}")
         info_meta.setObjectName("SidebarMeta")
         info_meta.setWordWrap(True)
@@ -263,6 +296,11 @@ class FacultyDashboard(QMainWindow):
         info_layout.addWidget(info_name)
         info_layout.addWidget(info_meta)
         sidebar_layout.addWidget(info_card)
+
+        self.theme_button = QPushButton(theme_manager.toggle_label())
+        self.theme_button.setProperty("variant", "theme")
+        self.theme_button.clicked.connect(self.toggle_theme)
+        sidebar_layout.addWidget(self.theme_button)
 
         self.nav = QListWidget()
         self.nav.setObjectName("NavList")
@@ -327,4 +365,8 @@ class FacultyDashboard(QMainWindow):
         except Exception as exc:
             LOGGER.exception("Dashboard refresh failed")
             QMessageBox.warning(self, "Refresh Error", f"The dashboard could not refresh fully.\n\n{exc}")
+
+    def toggle_theme(self) -> None:
+        theme_manager.toggle_theme()
+        self.theme_button.setText(theme_manager.toggle_label())
 

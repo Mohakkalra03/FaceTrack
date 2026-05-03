@@ -20,10 +20,12 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from client.api_client import BackendApiClient, BackendApiError
 from gui.branding import FacetrackLogo, PortalHeader
 from gui.timetable_page import TimetableWidget
 from services.attendance_service import AttendanceService
 from services.student_service import StudentService
+from utils.theme import theme_manager
 
 
 class StudentHomePage(QWidget):
@@ -33,6 +35,7 @@ class StudentHomePage(QWidget):
         super().__init__()
         self.student = student
         self.student_service = StudentService()
+        self.api_client = BackendApiClient()
         self._build_ui()
         self.refresh()
 
@@ -94,11 +97,17 @@ class StudentHomePage(QWidget):
 
     def refresh(self) -> None:
         """Update attendance percentage widgets."""
-        current_student = self.student_service.get_student_by_roll(self.student.roll_no)
-        if current_student:
-            self.student = current_student
-            self.red_flag_value.setText(str(current_student.red_flags))
-        overall, _ = self.student_service.get_attendance_summary(self.student.roll_no)
+        try:
+            current_student = self.api_client.get_student(self.student.roll_no)
+            summary = self.api_client.get_student_attendance_summary(self.student.roll_no)
+            self.red_flag_value.setText(str(current_student["red_flags"]))
+            overall = summary["overall_percentage"]
+        except BackendApiError:
+            current_student = self.student_service.get_student_by_roll(self.student.roll_no)
+            if current_student:
+                self.student = current_student
+                self.red_flag_value.setText(str(current_student.red_flags))
+            overall, _ = self.student_service.get_attendance_summary(self.student.roll_no)
         self.percent_label.setText(f"{overall}%")
         self.progress.setValue(int(overall))
 
@@ -111,6 +120,7 @@ class StudentAttendancePage(QWidget):
         self.student = student
         self.student_service = StudentService()
         self.attendance_service = AttendanceService()
+        self.api_client = BackendApiClient()
         self._build_ui()
         self.refresh()
 
@@ -154,17 +164,37 @@ class StudentAttendancePage(QWidget):
 
     def refresh(self) -> None:
         """Load the student's attendance summary and raw records."""
-        _, summary_rows = self.student_service.get_attendance_summary(self.student.roll_no)
-        self.summary_table.setRowCount(len(summary_rows))
-        for row_index, item in enumerate(summary_rows):
-            values = [item.subject, item.present, item.total, item.percentage, item.late_flags]
+        try:
+            summary = self.api_client.get_student_attendance_summary(self.student.roll_no)
+            summary_rows = summary["subject_summaries"]
+            records = self.api_client.get_attendance_records(roll_no=self.student.roll_no)
+            summary_values = [
+                [item["subject"], item["present"], item["total"], item["percentage"], item["late_flags"]]
+                for item in summary_rows
+            ]
+            record_values = [
+                [record["subject"], record["date"], record["time"], record["status"], record["late_flags"], record["roll_no"]]
+                for record in records
+            ]
+        except BackendApiError:
+            _, summary_rows = self.student_service.get_attendance_summary(self.student.roll_no)
+            records = self.attendance_service.get_records(roll_no=self.student.roll_no)
+            summary_values = [
+                [item.subject, item.present, item.total, item.percentage, item.late_flags]
+                for item in summary_rows
+            ]
+            record_values = [
+                [record.subject, record.date, record.time, record.status, record.late_flags, record.roll_no]
+                for record in records
+            ]
+
+        self.summary_table.setRowCount(len(summary_values))
+        for row_index, values in enumerate(summary_values):
             for col_index, value in enumerate(values):
                 self.summary_table.setItem(row_index, col_index, QTableWidgetItem(str(value)))
 
-        records = self.attendance_service.get_records(roll_no=self.student.roll_no)
-        self.records_table.setRowCount(len(records))
-        for row_index, record in enumerate(records):
-            values = [record.subject, record.date, record.time, record.status, record.late_flags, record.roll_no]
+        self.records_table.setRowCount(len(record_values))
+        for row_index, values in enumerate(record_values):
             for col_index, value in enumerate(values):
                 self.records_table.setItem(row_index, col_index, QTableWidgetItem(str(value)))
 
@@ -201,7 +231,7 @@ class StudentProfilePage(QWidget):
             label = QLabel(label_text)
             label.setObjectName("MetricLabel")
             content = QLabel(value)
-            content.setStyleSheet("font-size: 18px; font-weight: 700; color: #eef4fb;")
+            content.setObjectName("StrongText")
             row_layout.addWidget(label)
             row_layout.addWidget(content)
             card_layout.addWidget(row)
@@ -244,15 +274,19 @@ class StudentDashboard(QMainWindow):
         heading = QLabel("Logged in student")
         heading.setObjectName("MetricLabel")
         name = QLabel(self.student.name)
-        name.setStyleSheet("font-size: 18px; font-weight: 700; color: #eef4fb;")
+        name.setObjectName("StrongText")
         details = QLabel(f"{self.student.roll_no}\nBatch {self.student.section}\nRead-only academic access")
         details.setObjectName("SidebarMeta")
-        details.setStyleSheet("color: #93a3ba;")
         details.setWordWrap(True)
         meta_layout.addWidget(heading)
         meta_layout.addWidget(name)
         meta_layout.addWidget(details)
         sidebar_layout.addWidget(meta_card)
+
+        self.theme_button = QPushButton(theme_manager.toggle_label())
+        self.theme_button.setProperty("variant", "theme")
+        self.theme_button.clicked.connect(self.toggle_theme)
+        sidebar_layout.addWidget(self.theme_button)
 
         self.nav = QListWidget()
         self.nav.setObjectName("NavList")
@@ -284,4 +318,8 @@ class StudentDashboard(QMainWindow):
             self.home_page.refresh()
         elif index == 1:
             self.attendance_page.refresh()
+
+    def toggle_theme(self) -> None:
+        theme_manager.toggle_theme()
+        self.theme_button.setText(theme_manager.toggle_label())
 

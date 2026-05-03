@@ -20,6 +20,35 @@ LOGGER = logging.getLogger(__name__)
 class StudentService:
     """Manage student records and student-facing queries."""
 
+    def register_student_payload(self, student_data: dict[str, Any], serialized_encoding: str) -> tuple[bool, str]:
+        """Insert a new student when encodings are already serialized upstream."""
+        if not serialized_encoding:
+            return False, "At least one face encoding is required."
+
+        with db_manager.connection() as conn:
+            exists = conn.execute("SELECT 1 FROM Students WHERE roll_no = ?", (student_data["roll_no"],)).fetchone()
+            if exists:
+                return False, "Roll number already exists."
+
+            conn.execute(
+                """
+                INSERT INTO Students(roll_no, name, department, year, section, password_hash, encoding, face_image_dir)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    student_data["roll_no"],
+                    student_data["name"],
+                    student_data["department"],
+                    student_data["year"],
+                    student_data["section"],
+                    hash_password(student_data["password"]),
+                    serialized_encoding,
+                    student_data.get("face_image_dir", ""),
+                ),
+            )
+        LOGGER.info("Registered student %s via serialized payload", student_data["roll_no"])
+        return True, "Student registered successfully."
+
     def register_student(self, student_data: dict[str, Any], encodings: list[np.ndarray]) -> tuple[bool, str]:
         """Insert a new student with pre-computed facial embeddings."""
         if not encodings:

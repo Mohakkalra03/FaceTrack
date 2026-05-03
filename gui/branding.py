@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from utils.config import BASE_DIR
 
 try:
     from PyQt6.QtSvgWidgets import QSvgWidget
@@ -13,9 +15,31 @@ except ImportError:  # pragma: no cover
     QSvgWidget = None
 
 
-ASSETS_DIR = Path(__file__).resolve().parent / "assets"
-LOGO_ASSET = ASSETS_DIR / "facetrack_logo.svg"
-CLASSROOM_ASSET = ASSETS_DIR / "classroom_scene.svg"
+def _candidate_asset_dirs() -> list[Path]:
+    module_assets = Path(__file__).resolve().parent / "assets"
+    runtime_assets = BASE_DIR / "gui" / "assets"
+    candidates = [runtime_assets, module_assets]
+    if getattr(sys, "frozen", False):
+        meipass = Path(getattr(sys, "_MEIPASS", BASE_DIR))
+        candidates.insert(0, meipass / "gui" / "assets")
+
+    unique: list[Path] = []
+    for candidate in candidates:
+        if candidate not in unique:
+            unique.append(candidate)
+    return unique
+
+
+def _resolve_asset(filename: str) -> Path:
+    for asset_dir in _candidate_asset_dirs():
+        asset_path = asset_dir / filename
+        if asset_path.exists():
+            return asset_path
+    return _candidate_asset_dirs()[0] / filename
+
+
+LOGO_ASSET = _resolve_asset("facetrack_logo.svg")
+CLASSROOM_ASSET = _resolve_asset("classroom_scene.svg")
 
 
 class _SvgPanel(QWidget):

@@ -17,8 +17,8 @@ class FaceRecognizer:
         self.student_records = student_records
         self.encoder = FaceEncoder()
         self.threshold = threshold if threshold is not None else FACE_DISTANCE_THRESHOLD
-        self.fallback_threshold = 5.0
-        self.ambiguity_margin = 0.035
+        self.fallback_threshold = 7.2
+        self.ambiguity_margin = 0.02
 
     def _probe_candidates(self, frame: np.ndarray) -> list[tuple[np.ndarray, float, str]]:
         """Build probe vectors that match the dimensions of stored encodings."""
@@ -34,7 +34,7 @@ class FaceRecognizer:
             face_probe = self.encoder.face_recognition_encoding(frame)
             if face_probe is not None:
                 probes.append((face_probe, self.threshold, "face_recognition"))
-        if 1024 in dimensions and not probes:
+        if 1024 in dimensions:
             fallback_probe = self.encoder.fallback_encoding(frame)
             if fallback_probe is not None:
                 probes.append((fallback_probe, self.fallback_threshold, "opencv-fallback"))
@@ -68,7 +68,7 @@ class FaceRecognizer:
                         second_best_distance = distance
 
         if best_match and best_distance < best_threshold:
-            if second_best_distance < float("inf") and abs(second_best_distance - best_distance) < self.ambiguity_margin:
+            if best_mode == "face_recognition" and second_best_distance < float("inf") and abs(second_best_distance - best_distance) < self.ambiguity_margin:
                 return {"status": "UNKNOWN", "distance": round(best_distance, 4), "reason": "ambiguous"}
             return {
                 "roll_no": best_match["roll_no"],

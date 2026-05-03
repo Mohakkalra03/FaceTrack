@@ -31,12 +31,12 @@ class FaceEncoder:
     def _detect_primary_face(self, frame: np.ndarray) -> np.ndarray | None:
         """Return a cropped face region when exactly one face is present."""
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = self._cascade.detectMultiScale(gray, scaleFactor=1.2, minNeighbors=6, minSize=(90, 90))
+        faces = self._cascade.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(80, 80))
         if len(faces) != 1:
             return None
 
         x, y, w, h = max(faces, key=lambda item: item[2] * item[3])
-        pad = 20
+        pad = max(24, int(min(w, h) * 0.18))
         x0 = max(0, x - pad)
         y0 = max(0, y - pad)
         x1 = min(frame.shape[1], x + w + pad)
@@ -49,7 +49,8 @@ class FaceEncoder:
         if face_region is None:
             return None
         gray = cv2.cvtColor(face_region, cv2.COLOR_BGR2GRAY)
-        resized = cv2.resize(gray, (32, 32)).astype(np.float64) / 255.0
+        normalized = cv2.equalizeHist(gray)
+        resized = cv2.resize(normalized, (32, 32)).astype(np.float64) / 255.0
         return resized.flatten()
 
     def face_recognition_encoding(self, frame: np.ndarray) -> np.ndarray | None:
@@ -63,7 +64,7 @@ class FaceEncoder:
             locations = face_recognition.face_locations(rgb_frame, model="hog")
             if len(locations) != 1:
                 return None
-            encodings = face_recognition.face_encodings(rgb_frame, locations)
+            encodings = face_recognition.face_encodings(rgb_frame, locations, num_jitters=1)
             if len(encodings) == 1:
                 return encodings[0]
         except Exception:
